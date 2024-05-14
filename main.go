@@ -14,6 +14,7 @@ import (
 type Product struct {
 	Data Data `json:"data"`
 }
+
 type Data struct {
 	ID                   int         `json:"id,omitempty"`
 	Name                 string      `json:"name,omitempty"`
@@ -43,18 +44,17 @@ type Data struct {
 func main() {
 	e := echo.New()
 
-	// allow cors
 	e.Use(middleware.CORS())
 
 	e.GET("/api/v1/products/:id", func(c echo.Context) error {
 		itemId := c.Param("id")
 		res, err := GetProductNFT(itemId)
 		if err != nil {
-			return c.JSON(404, map[string]interface{}{
+			return c.JSON(http.StatusNotFound, map[string]interface{}{
 				"data": nil,
 			})
 		}
-		return c.JSON(200, res)
+		return c.JSON(http.StatusOK, res)
 	})
 
 	e.Logger.Fatal(e.Start(":1323"))
@@ -62,29 +62,43 @@ func main() {
 
 func GetProductNFT(itemId string) (Product, error) {
 	url := fmt.Sprintf("https://prod-mkp-api.astronize.com/mkp/item/nft/0x7d4622363695473062cc0068686d81964bb6e09f/%s", itemId)
-	resp, err := http.Get(url)
-	if err != nil {
-		return Product{}, err
-	}
-	defer resp.Body.Close()
 
 	var product Product
-	err = json.NewDecoder(resp.Body).Decode(&product)
-	if err != nil {
-		return Product{}, err
-	}
-	if err = json.Unmarshal([]byte(product.Data.Params), &product.Data.ParamsJson); err != nil {
-		return Product{}, err
-	}
-	if err = json.Unmarshal([]byte(product.Data.ParamsTh), &product.Data.ParamsThJson); err != nil {
-		return Product{}, err
-	}
-	if err = json.Unmarshal([]byte(product.Data.ParamsEn), &product.Data.ParamsEnJson); err != nil {
-		return Product{}, err
-	}
+	for retries := 0; retries < 3; retries++ {
+		resp, err := http.Get(url)
+		if err != nil {
+			fmt.Printf("Error fetching product %s: %v\n", itemId, err)
+			continue
+		}
+		defer resp.Body.Close()
 
-	price, _ := strconv.Atoi(product.Data.Price)
-	product.Data.TsxPrice = float64(price) / 1e18
+		if resp.StatusCode != http.StatusOK {
+			fmt.Printf("Non-200 response for product %s: %v\n", itemId, resp.Status)
+			continue
+		}
 
-	return product, nil
+		if err := json.NewDecoder(resp.Body).Decode(&product); err != nil {
+			fmt.Printf("Error decoding product %s: %v\n", itemId, err)
+			continue
+		}
+
+		if err := json.Unmarshal([]byte(product.Data.Params), &product.Data.ParamsJson); err != nil {
+			fmt.Printf("Error unmarshalling Params for product %s: %v\n", itemId, err)
+			continue
+		}
+		if err := json.Unmarshal([]byte(product.Data.ParamsTh), &product.Data.ParamsThJson); err != nil {
+			fmt.Printf("Error unmarshalling ParamsTh for product %s: %v\n", itemId, err)
+			continue
+		}
+		if err := json.Unmarshal([]byte(product.Data.ParamsEn), &product.Data.ParamsEnJson); err != nil {
+			fmt.Printf("Error unmarshalling ParamsEn for product %s: %v\n", itemId, err)
+			continue
+		}
+
+		price, _ := strconv.Atoi(product.Data.Price)
+		product.Data.TsxPrice = float64(price) / 1e18
+
+		return product, nil
+	}
+	return Product{}, fmt.Errorf("failed to fetch product %s after 3 attempts", itemId)
 }
